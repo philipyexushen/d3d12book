@@ -135,7 +135,7 @@ bool BoxApp::Initialize()
 	BuildConstantBuffers();
     BuildRootSignature();
     BuildShadersAndInputLayout();
-    BuildBoxGeometry();
+    BuildTriangleGeometry();
     BuildPSO();
 
     // Execute the initialization commands.
@@ -379,54 +379,37 @@ void BoxApp::BuildShadersAndInputLayout()
 
 void BoxApp::BuildTriangleGeometry()
 {
-	std::array<VPosData, 8> vertices =
+	std::array<VPosData, 5> vertices =
 	{
-		VPosData({ XMFLOAT3(+1.0f, +1.0f, -0.0f) }),
-		VPosData({ XMFLOAT3(-1.0f, +1.0f, -0.0f) }),
-		VPosData({ XMFLOAT3(+1.0f, +1.0f, -0.0f) }),
-		VPosData({ XMFLOAT3(+1.0f, -1.0f, -0.0f) }),
-		VPosData({ XMFLOAT3(+1.0f, -1.0f, -1.41421f) }),
+		VPosData({ XMFLOAT3(+1.0f, +1.0f, +0.0f) }),
+		VPosData({ XMFLOAT3(+1.0f, -1.0f, +0.0f) }),
+		VPosData({ XMFLOAT3(-1.0f, -1.0f, +0.0f) }),
+		VPosData({ XMFLOAT3(-1.0f, +1.0f, +0.0f) }),
+		VPosData({ XMFLOAT3(+0.0f, -0.0f, -1.41421f) }),
 		
 	};
 
-	std::array<VColorData, 8> verticesColor =
+	std::array<VColorData, 5> verticesColor =
 	{
-		VColorData({ XMFLOAT4(Colors::White) }),
-		VColorData({ XMFLOAT4(Colors::Black) }),
-		VColorData({ XMFLOAT4(Colors::Red) }),
-		VColorData({ XMFLOAT4(Colors::Green) }),
-		VColorData({ XMFLOAT4(Colors::Blue) }),
+		VColorData({ XMFLOAT4(Colors::Violet) }),
+		VColorData({ XMFLOAT4(Colors::Violet) }),
+		VColorData({ XMFLOAT4(Colors::Violet) }),
+		VColorData({ XMFLOAT4(Colors::Violet) }),
 		VColorData({ XMFLOAT4(Colors::Yellow) }),
-		VColorData({ XMFLOAT4(Colors::Cyan) }),
-		VColorData({ XMFLOAT4(Colors::Magenta) })
 	};
 
 	// 顶点索引
-	std::array<std::uint16_t, 36> indices =
+	std::array<std::uint16_t, 18> indices =
 	{
-		// front face
-		0, 1, 2,
-		0, 2, 3,
+		// 底部两个三角形
+		0, 3, 2, 
+		0, 2, 1,
 
-		// back face
-		4, 6, 5,
-		4, 7, 6,
-
-		// left face
-		4, 5, 1,
-		4, 1, 0,
-
-		// right face
-		3, 2, 6,
-		3, 6, 7,
-
-		// top face
-		1, 5, 6,
-		1, 6, 2,
-
-		// bottom face
-		4, 0, 3,
-		4, 3, 7
+		// 四个斜面
+		4, 2, 3,
+		4, 3, 0,
+		4, 0, 1,
+		4, 1, 2
 	};
 
 	const UINT vbByteSize = (UINT)vertices.size() * sizeof(VPosData);
