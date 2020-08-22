@@ -27,14 +27,20 @@ struct VPosData
     XMFLOAT3 Pos;
 };
 
-struct VColorData
+struct VExtraData
 {
     XMFLOAT4 Color;
+	XMFLOAT4 GameTime;
 };
 
 struct ObjectConstants
 {
     XMFLOAT4X4 WorldViewProj = MathHelper::Identity4x4();
+};
+
+struct ObjectTimerConstants
+{
+	float gTime = 0.0f;
 };
 
 class BoxApp : public D3DApp
@@ -65,11 +71,11 @@ private:
     void BuildPSO();
 
 private:
-    
     ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
     ComPtr<ID3D12DescriptorHeap> mCbvHeap = nullptr;
 
-    std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB = nullptr;
+	std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB;
+	std::unique_ptr<UploadBuffer<ObjectTimerConstants>> mTimerObjectCB;
 
 	std::unique_ptr<MeshGeometry> mBoxGeo = nullptr;
 
@@ -181,6 +187,10 @@ void BoxApp::Update(const GameTimer& gt)
 	ObjectConstants objConstants;
     XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
     mObjectCB->CopyData(0, objConstants);
+
+	ObjectTimerConstants objTimerConstants;
+	objTimerConstants.gTime = gt.TotalTime();
+	mTimerObjectCB->CopyData(0, objTimerConstants);
 }
 
 void BoxApp::Draw(const GameTimer& gt)
@@ -212,7 +222,7 @@ void BoxApp::Draw(const GameTimer& gt)
 
 	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
-    // draw的时候，要给VS传参数，参数就是IASetVertexBuffers决定，里面的
+    // draw的时候，要给VS传参数，参数就是IASetVertexBuffers决定
     D3D12_VERTEX_BUFFER_VIEW bufferViewList[2];
     bufferViewList[0] = mBoxGeo->VertexBufferView();
     bufferViewList[1] = mBoxGeo->VertexColorBufferView();
@@ -297,7 +307,7 @@ void BoxApp::BuildDescriptorHeaps()
 {
     // 描述符堆
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
-    cbvHeapDesc.NumDescriptors = 1;
+    cbvHeapDesc.NumDescriptors = 2;
     cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	cbvHeapDesc.NodeMask = 0;
@@ -308,20 +318,42 @@ void BoxApp::BuildDescriptorHeaps()
 void BoxApp::BuildConstantBuffers()
 {
 	mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(), 1, true);
-	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+	
+	{
+		UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+		D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
+		// Offset to the ith object constant buffer in the buffer.
+		int boxCBufIndex = 0;
+		cbAddress += boxCBufIndex * objCBByteSize;
 
-	D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
-    // Offset to the ith object constant buffer in the buffer.
-    int boxCBufIndex = 0;
-	cbAddress += boxCBufIndex*objCBByteSize;
+		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+		cbvDesc.BufferLocation = cbAddress;
+		cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
 
-	D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
-	cbvDesc.BufferLocation = cbAddress;
-	cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+		md3dDevice->CreateConstantBufferView(
+			&cbvDesc,
+			mCbvHeap->GetCPUDescriptorHandleForHeapStart());
+	}
 
-	md3dDevice->CreateConstantBufferView(
-		&cbvDesc,
-		mCbvHeap->GetCPUDescriptorHandleForHeapStart());
+	mTimerObjectCB = std::make_unique<UploadBuffer<ObjectTimerConstants>>(md3dDevice.Get(), 1, true);
+	{
+		UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectTimerConstants));
+		mTimerObjectCB = std::make_unique<UploadBuffer<ObjectTimerConstants>>(md3dDevice.Get(), 1, true);
+		D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mTimerObjectCB->Resource()->GetGPUVirtualAddress();
+
+		int boxCBufIndex = 0;
+		cbAddress += boxCBufIndex * objCBByteSize;
+		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+		cbvDesc.BufferLocation = 0;
+		cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectTimerConstants));
+
+		auto handleIncrementSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		CD3DX12_CPU_DESCRIPTOR_HANDLE hGPUHeapStart(mCbvHeap->GetCPUDescriptorHandleForHeapStart(), 1 * handleIncrementSize);
+
+		md3dDevice->CreateConstantBufferView(
+			&cbvDesc,
+			hGPUHeapStart);
+	}
 }
 
 void BoxApp::BuildRootSignature()
@@ -337,7 +369,7 @@ void BoxApp::BuildRootSignature()
 
 	// Create a single descriptor table of CBVs.
 	CD3DX12_DESCRIPTOR_RANGE cbvTable;
-	cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
+	cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 2, 0);
 	slotRootParameter[0].InitAsDescriptorTable(1, &cbvTable);
 
 	// A root signature is an array of root parameters.
@@ -386,16 +418,15 @@ void BoxApp::BuildTriangleGeometry()
 		VPosData({ XMFLOAT3(-1.0f, -1.0f, +0.0f) }),
 		VPosData({ XMFLOAT3(-1.0f, +1.0f, +0.0f) }),
 		VPosData({ XMFLOAT3(+0.0f, -0.0f, -1.41421f) }),
-		
 	};
 
-	std::array<VColorData, 5> verticesColor =
+	std::array<VExtraData, 5> verticesColor =
 	{
-		VColorData({ XMFLOAT4(Colors::Violet) }),
-		VColorData({ XMFLOAT4(Colors::Violet) }),
-		VColorData({ XMFLOAT4(Colors::Violet) }),
-		VColorData({ XMFLOAT4(Colors::Violet) }),
-		VColorData({ XMFLOAT4(Colors::Yellow) }),
+		VExtraData({ XMFLOAT4(Colors::Violet),  }),
+		VExtraData({ XMFLOAT4(Colors::Violet) }),
+		VExtraData({ XMFLOAT4(Colors::Violet) }),
+		VExtraData({ XMFLOAT4(Colors::Violet) }),
+		VExtraData({ XMFLOAT4(Colors::Yellow) }),
 	};
 
 	// 顶点索引
@@ -414,7 +445,7 @@ void BoxApp::BuildTriangleGeometry()
 
 	const UINT vbByteSize = (UINT)vertices.size() * sizeof(VPosData);
 	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
-	const UINT vbColorByteSize = (UINT)verticesColor.size() * sizeof(VColorData);
+	const UINT vbColorByteSize = (UINT)verticesColor.size() * sizeof(VExtraData);
 
 	mBoxGeo = std::make_unique<MeshGeometry>();
 	mBoxGeo->Name = "boxGeo";
@@ -441,7 +472,7 @@ void BoxApp::BuildTriangleGeometry()
 	mBoxGeo->VertexBufferByteSize = vbByteSize;
 	mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
 	mBoxGeo->IndexBufferByteSize = ibByteSize;
-	mBoxGeo->VertexColorBufferStride = sizeof(VColorData);
+	mBoxGeo->VertexColorBufferStride = sizeof(VExtraData);
 	mBoxGeo->VertexColorBufferByteSize = vbColorByteSize;
 
 	SubmeshGeometry submesh;
@@ -466,16 +497,16 @@ void BoxApp::BuildBoxGeometry()
         VPosData({ XMFLOAT3(+1.0f, -1.0f, +1.0f) })
     };
 
-    std::array<VColorData, 8> verticesColor =
+    std::array<VExtraData, 8> verticesColor =
     {
-        VColorData({ XMFLOAT4(Colors::White) }),
-        VColorData({ XMFLOAT4(Colors::Black) }),
-        VColorData({ XMFLOAT4(Colors::Red) }),
-        VColorData({ XMFLOAT4(Colors::Green) }),
-        VColorData({ XMFLOAT4(Colors::Blue) }),
-        VColorData({ XMFLOAT4(Colors::Yellow) }),
-        VColorData({ XMFLOAT4(Colors::Cyan) }),
-        VColorData({ XMFLOAT4(Colors::Magenta) })
+        VExtraData({ XMFLOAT4(Colors::White) }),
+        VExtraData({ XMFLOAT4(Colors::Black) }),
+        VExtraData({ XMFLOAT4(Colors::Red) }),
+        VExtraData({ XMFLOAT4(Colors::Green) }),
+        VExtraData({ XMFLOAT4(Colors::Blue) }),
+        VExtraData({ XMFLOAT4(Colors::Yellow) }),
+        VExtraData({ XMFLOAT4(Colors::Cyan) }),
+        VExtraData({ XMFLOAT4(Colors::Magenta) })
     };
 
     // 顶点索引
@@ -508,7 +539,7 @@ void BoxApp::BuildBoxGeometry()
 
     const UINT vbByteSize = (UINT)vertices.size() * sizeof(VPosData);
 	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
-    const UINT vbColorByteSize = (UINT)verticesColor.size() * sizeof(VColorData);
+    const UINT vbColorByteSize = (UINT)verticesColor.size() * sizeof(VExtraData);
 
 	mBoxGeo = std::make_unique<MeshGeometry>();
 	mBoxGeo->Name = "boxGeo";
@@ -535,7 +566,7 @@ void BoxApp::BuildBoxGeometry()
 	mBoxGeo->VertexBufferByteSize = vbByteSize;
 	mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
 	mBoxGeo->IndexBufferByteSize = ibByteSize;
-    mBoxGeo->VertexColorBufferStride = sizeof(VColorData);
+    mBoxGeo->VertexColorBufferStride = sizeof(VExtraData);
     mBoxGeo->VertexColorBufferByteSize = vbColorByteSize;
 
 	SubmeshGeometry submesh;
