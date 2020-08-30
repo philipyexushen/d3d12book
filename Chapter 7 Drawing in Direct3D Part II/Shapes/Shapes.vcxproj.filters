@@ -63,4 +63,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="Shaders\color.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+  </ItemGroup>
 </Project>

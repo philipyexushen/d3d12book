@@ -9,10 +9,12 @@ cbuffer cbPerObject : register(b0)
 	float4x4 gWorldViewProj; 
 };
 
-cbuffer cbPerGtimeObject : register(b1)
+/*
+* cbuffer cbPerGtimeObject : register(b1)
 {
 	float gTime;
 };
+*/
 
 struct VPosData
 {
@@ -39,8 +41,8 @@ struct VertexOut
 VertexOut VS(VPosData posData, VExtraData extraData)
 {
 	VertexOut vout;
-	posData.PosL.xy += 0.5f * sin(posData.PosL.x) * sin(3.0f * gTime);
-	posData.PosL.z *= 0.6f + 0.4f * sin(2.0f * gTime);
+	// posData.PosL.xy += 0.5f * sin(posData.PosL.x) * sin(3.0f * gTime);
+	// posData.PosL.z *= 0.6f + 0.4f * sin(2.0f * gTime);
 	
 	// Transform to homogeneous clip space.
 	vout.PosH = mul(float4(posData.PosL, 1.0f), gWorldViewProj);

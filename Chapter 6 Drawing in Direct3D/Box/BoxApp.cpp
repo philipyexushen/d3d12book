@@ -75,9 +75,10 @@ private:
     ComPtr<ID3D12DescriptorHeap> mCbvHeap = nullptr;
 
 	std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB;
-	std::unique_ptr<UploadBuffer<ObjectTimerConstants>> mTimerObjectCB;
+	// std::unique_ptr<UploadBuffer<ObjectTimerConstants>> mTimerObjectCB;
 
-	std::unique_ptr<MeshGeometry> mBoxGeo = nullptr;
+	std::unique_ptr<MeshGeometry> mTriGeo;
+	std::unique_ptr<MeshGeometry> mBoxGeo;
 
     ComPtr<ID3DBlob> mvsByteCode = nullptr;
     ComPtr<ID3DBlob> mpsByteCode = nullptr;
@@ -87,6 +88,7 @@ private:
     ComPtr<ID3D12PipelineState> mPSO = nullptr;
 
     XMFLOAT4X4 mWorld = MathHelper::Identity4x4();
+	XMFLOAT4X4 mWorld2 = MathHelper::Identity4x4();
     XMFLOAT4X4 mView = MathHelper::Identity4x4();
     XMFLOAT4X4 mProj = MathHelper::Identity4x4();
 
@@ -123,6 +125,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 BoxApp::BoxApp(HINSTANCE hInstance)
 : D3DApp(hInstance) 
 {
+	mWorld2._41 = -2.0f;
+	mWorld2._43 = -1.0f;
 }
 
 BoxApp::~BoxApp()
@@ -142,6 +146,7 @@ bool BoxApp::Initialize()
     BuildRootSignature();
     BuildShadersAndInputLayout();
     BuildTriangleGeometry();
+	BuildBoxGeometry();
     BuildPSO();
 
     // Execute the initialization commands.
@@ -160,6 +165,7 @@ void BoxApp::OnResize()
 	D3DApp::OnResize();
 
     // The window resized, so update the aspect ratio and recompute the projection matrix.
+	// 透视矩阵
     XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f*MathHelper::Pi, AspectRatio(), 1.0f, 1000.0f);
     XMStoreFloat4x4(&mProj, P);
 }
@@ -176,11 +182,12 @@ void BoxApp::Update(const GameTimer& gt)
     XMVECTOR target = XMVectorZero();
     XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
+	// 找到观察矩阵
     XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
     XMStoreFloat4x4(&mView, view);
 
     XMMATRIX world = XMLoadFloat4x4(&mWorld);
-    XMMATRIX proj = XMLoadFloat4x4(&mProj);
+    XMMATRIX proj = XMLoadFloat4x4(&mProj); // 我们必须在齐次裁剪控件内
     XMMATRIX worldViewProj = world*view*proj;
 
 	// Update the constant buffer with the latest worldViewProj matrix.
@@ -188,9 +195,16 @@ void BoxApp::Update(const GameTimer& gt)
     XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
     mObjectCB->CopyData(0, objConstants);
 
-	ObjectTimerConstants objTimerConstants;
-	objTimerConstants.gTime = gt.TotalTime();
-	mTimerObjectCB->CopyData(0, objTimerConstants);
+	XMMATRIX world2 = XMLoadFloat4x4(&mWorld2);
+	XMMATRIX worldViewProj2 = world2 * view * proj;
+
+	ObjectConstants objConstants2;
+	XMStoreFloat4x4(&objConstants2.WorldViewProj, XMMatrixTranspose(worldViewProj2));
+	mObjectCB->CopyData(1, objConstants2);
+
+// 	ObjectTimerConstants objTimerConstants;
+// 	objTimerConstants.gTime = gt.TotalTime();
+// 	mTimerObjectCB->CopyData(0, objTimerConstants);
 }
 
 void BoxApp::Draw(const GameTimer& gt)
@@ -222,20 +236,45 @@ void BoxApp::Draw(const GameTimer& gt)
 
 	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
+	// 先画三角形
     // draw的时候，要给VS传参数，参数就是IASetVertexBuffers决定
     D3D12_VERTEX_BUFFER_VIEW bufferViewList[2];
-    bufferViewList[0] = mBoxGeo->VertexBufferView();
-    bufferViewList[1] = mBoxGeo->VertexColorBufferView();
+    bufferViewList[0] = mTriGeo->VertexBufferView();
+    bufferViewList[1] = mTriGeo->VertexColorBufferView();
 
 	mCommandList->IASetVertexBuffers(0, 2, bufferViewList);
-	mCommandList->IASetIndexBuffer(&mBoxGeo->IndexBufferView());
+	mCommandList->IASetIndexBuffer(&mTriGeo->IndexBufferView());
     mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     
     mCommandList->SetGraphicsRootDescriptorTable(0, mCbvHeap->GetGPUDescriptorHandleForHeapStart());
 
+	auto& triArgs = mTriGeo->DrawArgs["box"];
     mCommandList->DrawIndexedInstanced(
-		mBoxGeo->DrawArgs["box"].IndexCount, 
-		1, 0, 0, 0);
+		triArgs.IndexCount,
+		1, 
+		triArgs.StartIndexLocation, 
+		triArgs.BaseVertexLocation,
+		0);
+
+	// 再画正方体
+	bufferViewList[0] = mBoxGeo->VertexBufferView();
+	bufferViewList[1] = mBoxGeo->VertexColorBufferView();
+
+	mCommandList->IASetVertexBuffers(0, 2, bufferViewList);
+	mCommandList->IASetIndexBuffer(&mBoxGeo->IndexBufferView());
+	mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+	auto handleIncrementSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	CD3DX12_GPU_DESCRIPTOR_HANDLE hanlde(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), handleIncrementSize);
+	mCommandList->SetGraphicsRootDescriptorTable(0, hanlde);
+
+	auto& cubeArgs = mBoxGeo->DrawArgs["box"];
+	mCommandList->DrawIndexedInstanced(
+		cubeArgs.IndexCount,
+		1,
+		cubeArgs.StartIndexLocation,
+		cubeArgs.BaseVertexLocation,
+		0);
 	
     // Indicate a state transition on the resource usage.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -317,43 +356,60 @@ void BoxApp::BuildDescriptorHeaps()
 
 void BoxApp::BuildConstantBuffers()
 {
-	mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(), 1, true);
+	mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(), 2, true);
 	
 	{
 		UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
-		D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
 		// Offset to the ith object constant buffer in the buffer.
+
+		D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
 		int boxCBufIndex = 0;
 		cbAddress += boxCBufIndex * objCBByteSize;
-
+		// DESC是Describes的意思
 		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
 		cbvDesc.BufferLocation = cbAddress;
-		cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+		cbvDesc.SizeInBytes = objCBByteSize;
 
 		md3dDevice->CreateConstantBufferView(
 			&cbvDesc,
 			mCbvHeap->GetCPUDescriptorHandleForHeapStart());
 	}
 
-	mTimerObjectCB = std::make_unique<UploadBuffer<ObjectTimerConstants>>(md3dDevice.Get(), 1, true);
 	{
-		UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectTimerConstants));
-		mTimerObjectCB = std::make_unique<UploadBuffer<ObjectTimerConstants>>(md3dDevice.Get(), 1, true);
-		D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mTimerObjectCB->Resource()->GetGPUVirtualAddress();
+		UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+		// Offset to the ith object constant buffer in the buffer.
 
-		int boxCBufIndex = 0;
+		// 内存在CPU和GPU的占用都是一个大小，所以可以直接用偏移的方式定位到第二个资源在GPU的位置
+		D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
+		int boxCBufIndex = 1;
 		cbAddress += boxCBufIndex * objCBByteSize;
-		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
-		cbvDesc.BufferLocation = 0;
-		cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectTimerConstants));
 
 		auto handleIncrementSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		CD3DX12_CPU_DESCRIPTOR_HANDLE hGPUHeapStart(mCbvHeap->GetCPUDescriptorHandleForHeapStart(), 1 * handleIncrementSize);
+		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+		cbvDesc.BufferLocation = cbAddress; // 绑定到第二个资源
+		cbvDesc.SizeInBytes = objCBByteSize;
 
+		// 绑定到hlsl的第二个描述附上
 		md3dDevice->CreateConstantBufferView(
 			&cbvDesc,
 			hGPUHeapStart);
 	}
+
+// 	mTimerObjectCB = std::make_unique<UploadBuffer<ObjectTimerConstants>>(md3dDevice.Get(), 1, true);
+// 	{
+// 		UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectTimerConstants));
+// 		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+// 		cbvDesc.BufferLocation = mTimerObjectCB->Resource()->GetGPUVirtualAddress();
+// 		cbvDesc.SizeInBytes = objCBByteSize;
+// 
+// 		auto handleIncrementSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+// 		CD3DX12_CPU_DESCRIPTOR_HANDLE hGPUHeapStart(mCbvHeap->GetCPUDescriptorHandleForHeapStart(), 1 * handleIncrementSize);
+// 
+// 		md3dDevice->CreateConstantBufferView(
+// 			&cbvDesc,
+// 			hGPUHeapStart);
+// 	}
 }
 
 void BoxApp::BuildRootSignature()
@@ -369,7 +425,8 @@ void BoxApp::BuildRootSignature()
 
 	// Create a single descriptor table of CBVs.
 	CD3DX12_DESCRIPTOR_RANGE cbvTable;
-	cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 2, 0);
+	// cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 2, 0);
+	cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
 	slotRootParameter[0].InitAsDescriptorTable(1, &cbvTable);
 
 	// A root signature is an array of root parameters.
@@ -384,7 +441,7 @@ void BoxApp::BuildRootSignature()
 
 	if(errorBlob != nullptr)
 	{
-		::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+		::OutputDebugStringW((wchar_t*)errorBlob->GetBufferPointer());
 	}
 	ThrowIfFailed(hr);
 
@@ -447,40 +504,40 @@ void BoxApp::BuildTriangleGeometry()
 	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
 	const UINT vbColorByteSize = (UINT)verticesColor.size() * sizeof(VExtraData);
 
-	mBoxGeo = std::make_unique<MeshGeometry>();
-	mBoxGeo->Name = "boxGeo";
+	mTriGeo = std::make_unique<MeshGeometry>();
+	mTriGeo->Name = "triGeo";
 
-	ThrowIfFailed(D3DCreateBlob(vbByteSize, &mBoxGeo->VertexBufferCPU));
-	CopyMemory(mBoxGeo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+	ThrowIfFailed(D3DCreateBlob(vbByteSize, &mTriGeo->VertexBufferCPU));
+	CopyMemory(mTriGeo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
 
-	ThrowIfFailed(D3DCreateBlob(ibByteSize, &mBoxGeo->IndexBufferCPU));
-	CopyMemory(mBoxGeo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
+	ThrowIfFailed(D3DCreateBlob(ibByteSize, &mTriGeo->IndexBufferCPU));
+	CopyMemory(mTriGeo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
 
-	ThrowIfFailed(D3DCreateBlob(vbColorByteSize, &mBoxGeo->VertexColorBufferCPU));
-	CopyMemory(mBoxGeo->VertexColorBufferCPU->GetBufferPointer(), verticesColor.data(), vbColorByteSize);
+	ThrowIfFailed(D3DCreateBlob(vbColorByteSize, &mTriGeo->VertexColorBufferCPU));
+	CopyMemory(mTriGeo->VertexColorBufferCPU->GetBufferPointer(), verticesColor.data(), vbColorByteSize);
 
-	mBoxGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
-		mCommandList.Get(), vertices.data(), vbByteSize, mBoxGeo->VertexBufferUploader);
+	mTriGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), vertices.data(), vbByteSize, mTriGeo->VertexBufferUploader);
 
-	mBoxGeo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
-		mCommandList.Get(), indices.data(), ibByteSize, mBoxGeo->IndexBufferUploader);
+	mTriGeo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), indices.data(), ibByteSize, mTriGeo->IndexBufferUploader);
 
-	mBoxGeo->VertexColorBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
-		mCommandList.Get(), verticesColor.data(), vbColorByteSize, mBoxGeo->VertexColorBufferUploader);
+	mTriGeo->VertexColorBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), verticesColor.data(), vbColorByteSize, mTriGeo->VertexColorBufferUploader);
 
-	mBoxGeo->VertexByteStride = sizeof(VPosData);
-	mBoxGeo->VertexBufferByteSize = vbByteSize;
-	mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
-	mBoxGeo->IndexBufferByteSize = ibByteSize;
-	mBoxGeo->VertexColorBufferStride = sizeof(VExtraData);
-	mBoxGeo->VertexColorBufferByteSize = vbColorByteSize;
+	mTriGeo->VertexByteStride = sizeof(VPosData);
+	mTriGeo->VertexBufferByteSize = vbByteSize;
+	mTriGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
+	mTriGeo->IndexBufferByteSize = ibByteSize;
+	mTriGeo->VertexColorBufferStride = sizeof(VExtraData);
+	mTriGeo->VertexColorBufferByteSize = vbColorByteSize;
 
 	SubmeshGeometry submesh;
 	submesh.IndexCount = (UINT)indices.size();
 	submesh.StartIndexLocation = 0;
 	submesh.BaseVertexLocation = 0;
 
-	mBoxGeo->DrawArgs["box"] = submesh;
+	mTriGeo->DrawArgs["box"] = submesh;
 }
 
 void BoxApp::BuildBoxGeometry()
@@ -566,8 +623,8 @@ void BoxApp::BuildBoxGeometry()
 	mBoxGeo->VertexBufferByteSize = vbByteSize;
 	mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
 	mBoxGeo->IndexBufferByteSize = ibByteSize;
-    mBoxGeo->VertexColorBufferStride = sizeof(VExtraData);
-    mBoxGeo->VertexColorBufferByteSize = vbColorByteSize;
+	mBoxGeo->VertexColorBufferStride = sizeof(VExtraData);
+	mBoxGeo->VertexColorBufferByteSize = vbColorByteSize;
 
 	SubmeshGeometry submesh;
 	submesh.IndexCount = (UINT)indices.size();
